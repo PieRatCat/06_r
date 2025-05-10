@@ -1,0 +1,1070 @@
+---
+title: "R course project report"
+author: "Amanda Sumner, DS24"
+date: "10 May 2025"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: right
+    toc-expand: true
+    number-sections: true
+    highlight-style: nord
+execute:
+  output: true
+  warning: false
+lightbox: true
+mainfont: "Roboto"
+monofont: "Fira Code"
+df-print: paged
+code-fold: show
+code-overflow: scroll
+code-line-numbers: true
+code-copy: true
+
+editor: visual
+---
+
+# Introduction
+
+The following report consists of exam tasks for the R programming course in several parts: use of external data from SCB, collecting car sales data from Blocket.se, regression model trained on this car sales data, and answers to theoretical questions. This report was written in R Studio and exported as html. The .qmd file with code is also available.
+
+# External data from SCB
+
+Loading libraries for the entire project:
+
+```{r load-libraries}
+library(tidyverse)
+library(readxl)
+library(skimr)
+library(scales)
+library(knitr)
+library(patchwork)
+library(car)
+library(rsample)
+library(Metrics)
+library(broom)
+library(pxweb)
+library(jsonlite)
+library(janitor)
+library(ggrepel)
+```
+
+## Income by region
+
+Income data: median income by region (for ages 16+) and population, year 2023.
+
+```{r scb-api-inkomst}
+
+scb_api_inkomst <- "https://api.scb.se/OV0104/v1/doris/sv/ssd/START/HE/HE0110/HE0110A/SamForvInk1"
+
+pxweb_query_inkomst <- list(
+  "Region" = c("01", "03", "04", "05", "06", "07", "08", "09", "10",
+               "12", "13", "14", "17", "18", "19", "20", "21", "22",
+               "23", "24", "25"),
+  "Alder" = c("tot16+"),             
+  "ContentsCode" = c("HE0110J7",     
+                     "HE0110J9"),    
+  "Tid" = c("2023")                  
+)
+
+scb_response_inkomst <- pxweb_get(url = scb_api_inkomst, query = pxweb_query_inkomst)
+
+scb_data_inkomst <- as.data.frame(scb_response_inkomst)
+
+scb_inkomst <- scb_data_inkomst |>
+  select(
+  region = region,
+  medelinkomst = `Medelinkomst, tkr`,
+  antal_pers = `Antal personer`
+  ) |>
+  mutate(
+    medelinkomst = as.numeric(medelinkomst),
+    antal_pers = as.numeric(antal_pers),
+    region = as.factor(region)
+  )
+
+scb_inkomst
+
+
+```
+
+## Car ownership
+
+Car ownership data: total number of passenger cars per region, year 2023.
+
+```{r scb-api-cars}
+scb_api_bilar <- "https://api.scb.se/OV0104/v1/doris/sv/ssd/START/TK/TK1001/TK1001A/PersBilarA"
+
+pxweb_query_bilar <- list(
+  "Region" = c("01", "03", "04", "05", "06", "07", "08", "09", "10",
+               "12", "13", "14", "17", "18", "19", "20", "21", "22",
+               "23", "24", "25"),
+  "ContentsCode" = c("TK1001AB"),
+  "Tid" = c("2023")
+)
+
+scb_response_bilar <- pxweb_get(url = scb_api_bilar, query = pxweb_query_bilar)
+
+scb_data_bilar <- as.data.frame(scb_response_bilar)
+
+scb_bilar <- scb_data_bilar |>
+  select(
+  region = region,
+  antal_bil = `Antal`
+  ) |>
+  mutate(
+    antal_bil = as.numeric(antal_bil),
+    region = as.factor(region)
+  )
+
+scb_bilar
+```
+
+```{r join-data}
+scb_data <- left_join(scb_inkomst, scb_bilar, by = "region")
+scb_data
+
+```
+
+## Data visualisation
+
+```{r scb-visualisation}
+
+scb_data_viz <- scb_data |>
+  mutate(bilar_per_1000 = (antal_bil / antal_pers) * 1000)
+
+scb_data_viz
+
+income_vs_cars <- ggplot(scb_data_viz,                                          aes(x = medelinkomst, y = bilar_per_1000)) +
+  geom_point(aes(size = antal_pers), alpha = 0.8, color = "deepskyblue4") +
+  geom_smooth(method = "lm", se = FALSE, color = "darkorange") +
+  geom_text_repel(aes(label = region), size = 3, max.overlaps = 15) +
+  labs(
+    title = "Car ownership vs average income by region",
+    subtitle = "Point size represents regional population",
+    x = "Average income (thousands of SEK)",
+    y = "Cars per 1000 population"
+  )+
+  theme(legend.position = "none")
+
+income_vs_cars
+
+region_income <- ggplot(scb_data_viz, aes(x = medelinkomst, y = fct_reorder(region, medelinkomst))) +
+  geom_col(fill = "pink", color = "black") +
+  geom_text(aes(label = round(medelinkomst, 0)),
+            hjust = -0.2,
+            size = 3) +
+  scale_x_continuous(expand = expansion(mult = c(0.01, 0.2))) +
+  labs(
+    title = "Average income",
+    subtitle = "by region in 2023",
+    x = "Average income (kSEK)",
+    y = element_blank()
+  )
+
+
+region_cars_per_1000 <- ggplot(scb_data_viz, aes(x = bilar_per_1000, y = fct_reorder(region, bilar_per_1000))) +
+  geom_col(fill = "lightblue", color = "black") +
+  geom_text(aes(label = round(bilar_per_1000, 0)),
+            hjust = -0.2,
+            size = 3) +
+  scale_x_continuous(expand = expansion(mult = c(0.01, 0.2))) +
+  labs(
+    title = "Number of cars",
+    subtitle = "per 1000 population",
+    x = "Number of cars",
+    y = element_blank()
+  )
+region_income + region_cars_per_1000
+```
+
+Sweden exhibits notable regional disparities in both average income and car ownership. These variations suggest that used car market and specifically pricing might vary across the country. The data show that there is only a moderate relationship between car ownership and average income by region. Although, curiously, the regions with the highest and the lowest income have, respectively, the lowest and the highest car ownership rates.
+
+I would like to later use this data with my collected car sales data from Blocket to see if there is a relationship between car prices and average income or car ownership.
+
+# Data collection
+
+I collected data from Blocket.se by using the Web Scraper Chrome extension (webscraper.io). It works by following links from a starting url and copying text from specified elements on the page. It opens each webpage in a popup Chrome window and after it is done, the data can be exported as csv. It is not blocked by the server as a robot because the user agent is Chrome and it is actually opening each webpage and copying the data, with a request interval and page load delay.
+
+I scraped data from 200 most recent pages of car listings which were filtered by year between 2010 and 2020, resulting in an Excel spreadsheet with approximately 7000 rows. I then cleaned the data in Power Query in Excel to remove rows with missing values and standardise spelling of some values. Colours, for example, were reduced to include only base colours: light blue and dark blue both converted to blue, etc. Numeric and text columns were converted to their correct data type, respectively. The resulting Excel spreadsheet had 6381 rows and 13 columns.
+
+# Blocket car data
+
+```{r load-data}
+car_data <- read_excel("blocket_cars.xlsx")
+
+head(car_data)
+
+skim(car_data)
+```
+
+## Numeric variables
+
+### EDA of price
+
+```{r eda-price}
+summary(car_data$price)
+
+car_data |>
+  ggplot(aes(x = price)) +
+  geom_histogram(bins = 100, fill = "lightblue", color = "black") +
+  scale_x_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k")) +
+  ggtitle("Distribution of car prices") +
+  xlab("Price (SEK)")
+
+car_data |>
+  filter(price < 40000) |>
+  ggplot(aes(x = price)) +
+  geom_histogram(bins = 100, fill = "pink", color = "black") +
+  ggtitle("Distribution of low car prices (< 40k SEK)") +
+  xlab("Price (SEK)")
+
+car_data |>
+  filter(price > 500000) |>
+  ggplot(aes(x = price)) +
+  geom_histogram(bins = 100, fill = "lavender", color = "black") +
+  scale_x_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k")) +
+  ggtitle("Distribution of High Car Prices (> 500k SEK)") +
+  xlab("Price (SEK)")
+
+```
+
+Filtering out cars priced below 30k SEK and above 500k SEK:
+
+```{r price-extremes}
+low_price_threshold <- 20000
+high_price_threshold <- 1000000
+
+car_data |>
+  filter(price >= high_price_threshold) |>
+  select(make, model, year, mileage, price) |>
+  arrange(desc(price)) |>
+  tibble()
+
+car_data |>
+  filter(price <= low_price_threshold) |>
+  select(make, model, year, mileage, price) |>
+  arrange(price) |>
+  tibble()
+```
+
+```{r filter-price}
+car_data <- car_data |>
+  filter(between(price, low_price_threshold, high_price_threshold))
+summary(car_data$price)
+
+car_data |>
+  ggplot(aes(x = price)) +
+  geom_histogram(bins = 100, fill = "lightblue", color = "black") +
+  scale_x_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k")) +
+  ggtitle("Distribution of car prices after filtering extremes") +
+  xlab("Price (SEK)")
+
+```
+
+### EDA of mileage
+
+```{r eda-mileage}
+summary(car_data$mileage)
+car_data |>
+  ggplot(aes(x = mileage)) +
+  geom_histogram(bins = 50, fill="lightblue", color = "black") +
+  ggtitle("Distribution of mileage")
+
+car_data |>
+  filter(mileage > 40000) |>
+  ggplot(aes(x = mileage)) +
+  geom_histogram(bins = 50, fill="pink", color = "black") +
+  ggtitle("Distribution of mileage over 40000")
+
+```
+
+```{r filter-mileage}
+car_data <- car_data |>
+  filter(mileage <= 40000)
+summary(car_data$mileage)
+
+```
+
+### EDA of engine
+
+```{r eda-engine}
+summary(car_data$engine_cc)
+
+car_data |>
+  ggplot(aes(x = engine_cc)) +
+  geom_histogram(bins = 50, fill="lightblue", color = "black") +
+  ggtitle("Distribution of engine size")
+
+car_data |>
+  filter(engine_cc > 6000) |>
+  select(make, model, year, engine_cc, price) |>
+  arrange(desc(engine_cc)) |>
+  tibble()
+```
+
+### EDA of power
+
+```{r eda-power_hk}
+summary(car_data$power_hk)
+
+car_data |>
+  ggplot(aes(x = power_hk)) +
+  geom_histogram(bins = 50, fill="lightblue", color = "black") +
+  ggtitle("Distribution of power")
+
+car_data |>
+  filter(power_hk > 600) |>
+  select(make, model, year, power_hk, price) |>
+  arrange(desc(power_hk)) |>
+  tibble()
+
+```
+
+The horsepower distribution is very skewed. Does it need to be normalised? Visualising the relationship between horsepower and price.
+
+```{r eda-price-vs-power}
+ggplot(car_data, aes(x = power_hk, y = price)) +
+  geom_point(alpha = 0.5, color="deepskyblue4") +
+  geom_smooth(color="darkorange") +
+  ggtitle("Price vs Horsepower")
+
+```
+
+### Correlations of numeric predictors
+
+```{r numeric-correlations}
+numeric_predictors <- car_data |>
+  select(year, mileage, engine_cc, power_hk, price)
+cor(numeric_predictors)
+```
+
+## Categorical variables
+
+### Make and model
+
+```{r eda-make}
+n_distinct(car_data$make)
+n_distinct(car_data$model)
+
+make_counts <- car_data |>
+  count(make, sort = TRUE)
+print(make_counts)
+
+make_counts |>
+  slice_max(n, n = 30) |> # Show only top 30
+  ggplot(aes(x = n, y = fct_reorder(make, n))) +
+  geom_col(fill = "lightblue", color = "black") +
+  geom_text(
+    aes(label = n),
+    hjust = -0.2,
+    size = 3
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0.01, 0.1))) +
+  labs(
+    title = "Number of cars per make",
+    x = "Number of cars",
+    y = "Make"
+  )
+
+```
+
+There are 46 distinct car makes and 405 distinct models. That is too many models to use them all in prediction. However, certain car models are much more expensive than others from the same make. It is impractical to plot all car models, so I focus on the most common makes.
+
+```{r eda-price-model-make}
+
+top_make_names <- car_data |>
+  count(make, sort = TRUE) |>
+  slice_max(n, n = 6) |>
+  pull(make)
+
+top_makes_filtered <- car_data |>
+  filter(make %in% top_make_names) |>
+  mutate(make = factor(make, levels = top_make_names))
+
+plot_make <- function(make_name_string, input_data) {
+  make_data <- input_data |>
+    filter(make == make_name_string) |>
+    mutate(model_lumped = fct_lump_n(model, n = 10))
+  
+  p <- ggplot(make_data, aes(y = model_lumped, x = price)) +
+    geom_boxplot(fill = "lightblue", color = "black", outlier.color = "darkorange") +
+    scale_x_continuous(
+        labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)
+        ) +
+    labs(
+      title = make_name_string,
+      x = element_blank(),
+      y = element_blank()
+    ) +
+    theme_minimal(base_size = 8)
+  
+  return(p)
+}
+
+plot_list <- map(top_make_names, ~plot_make(make_name_string = .x, input_data = top_makes_filtered))
+wrap_plots(plot_list, ncol = 3)
+
+```
+
+### Body type
+
+Looking at the price distribution, it appears that certain models, especially noticeable with BMW, are much higher priced. Is it related to those being sports cars?
+
+```{r eda-bmw-price-body}
+car_data_body <- car_data |>
+  mutate(body = as.factor(body))
+
+print(car_data_body |> count(body, sort = TRUE))
+
+ggplot(car_data_body, aes(x = fct_reorder(body, price, .fun = median, .desc = FALSE), y = price)) +
+  geom_boxplot(fill = "lavender", outlier.color = "darkorange") +
+  scale_y_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  coord_flip() +
+  labs(
+    title = "Price distribution by body style",
+    y = "Price (thousands of SEK)",
+    x = "Body style"
+  )
+
+```
+
+### Power and engine
+
+Prices are not strongly related to a specific body type. Are they related to either engine size or power?
+
+```{r eda-bmw-price-engine-hk}
+car_data_price <- car_data |>
+  mutate(Is_High_Price = price > 500000)
+
+plot_power <- ggplot(car_data_price, aes(x = power_hk, y = price, color = Is_High_Price)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = c("FALSE" = "deepskyblue4", "TRUE" = "darkorange"), name = paste("Price > 500k")) +
+  scale_y_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  theme(legend.position = "bottom") +
+  labs(
+    title = "Price vs horsepower",
+    x = "Horsepower (hk)",
+    y = "Price (thousands of SEK)",
+    )
+ 
+
+plot_engine <- ggplot(car_data_price, aes(x = engine_cc, y = price, color = Is_High_Price)) +
+  geom_point(alpha = 0.7) +
+  scale_color_manual(values = c("FALSE" = "deepskyblue4", "TRUE" = "darkorange"), name = paste("Price > 500k")) +
+  scale_y_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  theme(legend.position = "bottom") +
+  labs(
+    title = "Price vs engine size (cc)",
+    x = "Engine size (cc)",
+    y = "Price (thousands of SEK)",
+    
+  )
+ 
+plot_power + plot_engine
+```
+
+From the above visualisations, it is clear that the higher engine size and power, the more common are price outliers. This helps us understand that price outliers are not related to just specific car models but it is the car models with higher engine size and power, therefore the car model variable is not essential to include, make is sufficient.
+
+```{r remove-model-col}
+car_data <- car_data |>
+  select(-model)
+```
+
+```{r make-count}
+make_counts <- car_data |>
+  count(make, sort = TRUE) |>
+  mutate(Rank = row_number())
+
+ggplot(make_counts, aes(x = Rank, y = n)) +
+  geom_line(color = "deepskyblue4", linewidth = 1) +
+  geom_point(color = "deepskyblue4", size = 2) +
+  scale_y_continuous(labels = scales::label_number(accuracy = 1)) +
+  geom_vline(xintercept = 20, linetype = "dashed", color = "darkorange") +
+  geom_vline(xintercept = 25, linetype = "dashed", color = "red") +
+  geom_vline(xintercept = 30, linetype = "dashed", color = "purple") +
+  annotate("text", x = 20, y = Inf, label = "Top 20", vjust = 2, hjust = -0.1, size = 3, color = "darkorange") +
+  annotate("text", x = 25, y = Inf, label = "Top 25", vjust = 4, hjust = -0.1, size = 3, color = "red") +
+  annotate("text", x = 30, y = Inf, label = "Top 30", vjust = 6, hjust = -0.1, size = 3, color = "purple") +
+
+  labs(
+    title = "Car count per make (ordered by frequency)",
+    x = "Make rank (most frequent = 1)",
+    y = "Number of cars"
+  )
+```
+
+Limiting the car makes to the top 25 most common and lumping all other makes under "Other".
+
+```{r lump-makes}
+car_data <- car_data |>
+  mutate(
+    make = fct_lump_n(
+      make,
+      n = 25,
+      other_level = "Other"
+    )
+  )
+
+tibble(car_data |> count(make, sort = TRUE))
+```
+
+How do the other categorical variables relate to price?
+
+### Colour
+
+```{r eda-colour}
+colour_counts <- car_data |>
+  count(colour, sort = TRUE)
+
+
+plot_colour <- ggplot(colour_counts, aes(x = n, y = fct_reorder(colour, n))) +
+  geom_col(fill = "pink", color = "black") +
+  geom_text(
+    aes(label = n),
+    hjust = -0.2,
+    size = 3
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0.01, 0.1))) +
+  labs(
+    title = "Number of cars per colour",
+    x = "Number of cars",
+    y = element_blank()
+  )
+
+car_data <- car_data |>
+    mutate(colour = as.factor(colour))
+
+plot_colour_price <- ggplot(car_data, aes(x = fct_reorder(colour, price, .fun = median), y = price)) +
+  geom_boxplot(fill = "lavender", outlier.shape = 21, outlier.fill = "darkorange") + 
+  scale_y_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) + 
+
+  coord_flip() +
+  labs(
+    title = "Price distribution by car colour",
+    y = "Price (thousands of SEK)",
+    x = element_blank()
+  )
+plot_colour + plot_colour_price
+```
+
+At this point, it looks like colour does not affect the price much.
+
+Lumping the less common colours into "Other".
+
+```{r lump-colours}
+car_data <- car_data |>
+  mutate(
+    colour = fct_lump_n(
+      colour,
+      n = 7,
+      other_level = "Other"
+    )
+  )
+```
+
+### Drivetrain and transmission type
+
+```{r eda-drive-transmission}
+car_data <- car_data |>
+    mutate(
+      drive = as.factor(drive),
+      transmission = as.factor(transmission)
+      )
+
+plot_drive <- ggplot(car_data, aes(x = drive, y = price)) +
+  geom_boxplot(fill = "lightblue", outlier.shape = 21, outlier.fill = "darkorange") +
+  scale_y_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  labs(
+    title = "Price by drivetrain",
+    x = "Drivetrain type",
+    y = "Price (thousands of SEK)"
+  )
+
+
+plot_transmission <- ggplot(car_data, aes(x = transmission, y = price)) +
+  geom_boxplot(fill = "lavender", outlier.shape = 21, outlier.fill = "darkorange") +
+  scale_y_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  labs(
+    title = "Price by transmission type",
+    x = "Transmission type",
+    y = element_blank()
+  ) 
+
+plot_drive + plot_transmission
+
+```
+
+Automatic cars are, on average, more expensive than cars with manual transmission. Likewise, 4-wheel-drive cars are more expensive than 2-wheel-drive.
+
+### Fuel type
+
+```{r eda-fuel}
+tibble(car_data |> count(fuel, sort = TRUE))
+
+car_data <- car_data |>
+    mutate(
+      fuel = as.factor(fuel)
+      )
+
+plot_fuel <- ggplot(car_data, aes(x = fuel, y = price)) +
+  geom_boxplot(fill = "pink", outlier.shape = 21, outlier.fill = "darkorange") +
+  scale_y_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  labs(
+    title = "Price by fuel type",
+    x = "Fuel type",
+    y = "Price (thousands of SEK)"
+  )
+print(plot_fuel)
+```
+
+There is only one electric car in the dataset. Removing the row so that it doesn't affect the result.
+
+```{r remove-el}
+car_data <- car_data |>
+  filter(fuel != "el")
+
+car_data |> count(fuel)
+
+```
+
+### Location
+
+What to do about location? There are too many, with one or very few cars in some, but I want to see if price varies regionally.
+
+```{r eda-location}
+car_data |> count(location)
+
+```
+
+Mapping kommun to län to reduce the number of values. Importing an external csv file with all location data.
+
+```{r kommun-län-import}
+kommun_län_map <- read_csv("Postort-Kommun-Lan.csv")
+kommun_län_map
+
+```
+
+```{r rename-columns}
+kommun_lan_map <- kommun_län_map |>
+  rename(
+    kommun = `KnNamn.kort`,
+    lan = `LnNamn.kort`
+  ) |>
+  select(kommun, lan) |>
+  distinct(kommun, .keep_all = TRUE)
+
+car_data <- car_data |>
+  rename(kommun = location)
+
+```
+
+```{r join-kommun-län}
+car_data <- car_data |>
+  left_join(kommun_lan_map, by = "kommun")
+
+print(head(car_data |> select(kommun, lan)))
+
+
+
+```
+
+```{r count-failed-joins}
+sum(is.na(car_data$lan))
+sum(!is.na(car_data$lan))
+```
+
+Removing the failed joins, 45 rows, and selecting all necessary columns once again.
+
+```{r columns-with-län}
+car_data <- car_data |>
+  filter(!is.na(lan))
+
+car_data <- car_data |>
+  select(make, year, fuel, transmission, body, mileage, engine_cc, power_hk, drive, colour, lan, price)
+
+car_data
+```
+
+Does the price have regional variations?
+
+```{r regional-price}
+car_data <- car_data |>
+    mutate(
+      lan = as.factor(lan)
+      )
+
+avg_price_lan <- car_data |>
+  group_by(lan) |>
+  summarise(average_price = mean(price, na.rm = TRUE))
+
+
+plot_avg <- ggplot(
+  avg_price_lan,
+  aes(x = average_price, y = fct_reorder(lan, average_price))
+  ) +
+  geom_col(fill = "lightblue", color = "black") +
+  geom_text(aes(label = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)(average_price)), hjust = -0.1, size = 3) +
+  scale_x_continuous(
+    labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1), expand = expansion(mult = c(0.01, 0.15))
+  ) +
+  labs(
+    title = "Average car price by län",
+    x = "Average price (thousands of SEK)",
+    y = "Län (county)"
+  )
+  
+plot_price <- ggplot(
+  car_data,
+  aes(x = fct_reorder(lan, price, .fun = median, .desc = FALSE), y = price)) +
+  geom_boxplot(fill = "lavender", outlier.shape = 21, outlier.fill = "darkorange") +
+  scale_y_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  coord_flip() +
+  labs(
+    title = "Price distribution by län",
+    y = "Price (thousands of SEK)",
+    x = element_blank()
+  )
+  
+plot_avg + plot_price
+```
+
+As previously mentioned in the External data section, I wanted to compare the statistics from SCB on car ownership and income with the collected car prices by region. Is there a relationship between average income and car prices or the number of cars owned and car prices? It has to be noted that the SCB data is 2023 totals and the car listings are from April 2025. However, there should not be a noticeable difference as Sweden's economy has not changed significantly in one year.
+
+```{r stats-comparison}
+
+scb_data_viz_cleaned <- scb_data_viz |>
+  mutate(
+    lan = str_replace(region, regex(" län$"), ""),
+    lan = trimws(lan),
+    lan = str_replace(lan, regex("s$"), "")
+  ) |>
+  select(-(c("region", "antal_pers", "antal_bil")))
+
+combined_data <- left_join(
+  avg_price_lan,
+  scb_data_viz_cleaned,
+  by = "lan"
+)
+
+combined_data 
+
+```
+
+```{r comparison-plots}
+scatter_price_income <- ggplot(combined_data, aes(x = medelinkomst, y = average_price)) +
+  geom_point(aes(), color = "deepskyblue4", alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dotted", color = "darkorange", linewidth = 1) +
+  geom_text_repel(aes(label = lan), size = 3, max.overlaps = Inf, 
+                  box.padding = 0.4, point.padding = 0.3) +
+  scale_x_continuous(name = "Median income (SCB, thousands of SEK)",
+                     labels = scales::label_number(suffix = "k", accuracy = 1)) +
+  scale_y_continuous(name = "Average Blocket car price (SEK)",
+                     labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  labs(
+    title = "Blocket car price vs. median income by region"
+  )
+
+scatter_price_income
+
+scatter_price_cars <- ggplot(combined_data, aes(x = bilar_per_1000, y = average_price)) +
+  geom_point(aes(), color = "purple3", alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dotted", color = "darkorange", linewidth = 1) +
+  geom_text_repel(aes(label = lan), size = 3, max.overlaps = Inf,
+                  box.padding = 0.4, point.padding = 0.3) +
+  scale_x_continuous(name = "Cars per 1000 population (SCB)",
+                     labels = scales::label_number(accuracy = 1)) +
+  scale_y_continuous(name = "Average Blocket car price (SEK)",
+                     labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  labs(
+    title = "Blocket car price vs car ownership rate by region"
+  )
+
+scatter_price_cars
+```
+
+According to the two charts above, there is no clearly defined relationship between car prices on Blocket and car ownership rates and average income by region.
+
+### Prepared data
+
+Making sure all categorical predictors are converted into factors.
+
+```{r convert-to-factor}
+car_data <- car_data |>
+  mutate(
+    make = as.factor(make),
+    fuel = as.factor(fuel),
+    body = as.factor(body),
+    transmission = as.factor(transmission),
+    drive = as.factor(drive),
+    colour = as.factor(colour),
+    lan = as.factor(lan)
+    )
+  
+```
+
+## Regression model
+
+Split data into training and test sets, 80% training and 20% test, stratifying it on price, to ensure both sets have similar price distribution.
+
+```{r split-training-test-data}
+
+set.seed(26)
+
+data_split <- initial_split(car_data, prop = 0.80, strata = price)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+
+cat("Training data rows:", nrow(train_data), "\n")
+cat("Test data rows:", nrow(test_data), "\n")
+```
+
+### Initial model
+
+Fit the multiple linear regression model
+
+```{r fit-lm}
+
+lm1 <- lm(price ~ ., data = train_data)
+
+tidy(lm1, conf.int = TRUE)
+
+glance(lm1)
+```
+
+```{r lm-vif}
+vif(lm1)
+```
+
+Multicollinearity is generally low, below 2, except for engine_cc and power_hk where the values are close to the threshold of 2.0-2.2 This indicates moderate multicollinearity between the two variables, which makes sense, as engine size and horsepower are strongly related. The value is not high enough to be a concern though and both variables are statistically significant (low p-values).
+
+```{r lm-plot}
+par(mfrow = c(2, 2))
+plot(lm1)
+```
+
+The diagnostic plots for the initial linear regression model indicate a need for model refinement. The residuals vs fitted plot shows a curved pattern, the linear model doesn't capture non-linear relationships in the data. The scale - location plot also shows an upward trend and funnel shape which indicates heteroscedasticity - a non-constant variance of error. The Q-Q plot shows residuals deviating significantly from the line at tails, which means the residuals are not normally distributed. Residuals vs leverage plot highlights several outliers.
+
+### Model 2
+
+```{r fit-lm-refined-2}
+
+model_formula_refined <- log(price) ~ poly(mileage, 2) + poly(year, 2) + make + fuel + transmission + body + engine_cc + power_hk + drive + colour + lan
+
+lm2 <- lm(model_formula_refined, data = train_data)
+
+tidy(lm2, conf.int = TRUE)
+glance(lm2)
+
+vif(lm2)
+
+```
+
+```{r plot-lm2}
+par(mfrow = c(2, 2))
+plot(lm2)
+
+```
+
+### Model 3
+
+```{r fit-lm-refined-3}
+model_formula_refined2 <- log(price) ~ make + year + fuel + transmission + mileage + body + engine_cc + drive
+
+lm3 <- lm(model_formula_refined2, data = train_data)
+
+tidy(lm3, conf.int = TRUE)
+glance(lm3)
+
+vif(lm3)
+```
+
+```{r plot-lm3}
+par(mfrow = c(2, 2))
+plot(lm3)
+```
+
+### Model evaluation
+
+```{r evaluate-models}
+test_pred_1 <- predict(lm1, newdata = test_data)
+rmse_1 <- rmse(actual = test_data$price, predicted = test_pred_1)
+rsq_1 <- cor(test_data$price, test_pred_1)^2
+
+
+test_actual_sek <- test_data$price
+test_actual_log <- log(test_data$price)
+
+test_pred_2 <- predict(lm2, newdata = test_data)
+test_pred_sek_2 <- exp(test_pred_2)
+rmse_2 <- rmse(actual = test_actual_log, predicted = test_pred_2)
+rsq_2 <- cor(test_actual_log, test_pred_2)^2
+rmse_sek_2 <- rmse(actual = test_actual_sek, test_pred_sek_2)
+
+test_pred_3 <- predict(lm3, newdata = test_data)
+test_pred_sek_3 <- exp(test_pred_3)
+rmse_3 <- rmse(actual = test_actual_log, predicted = test_pred_3)
+rsq_3 <- cor(test_actual_log, test_pred_3)^2
+rmse_sek_3 <- rmse(actual = test_actual_sek, test_pred_sek_3)
+
+
+cat("Initial model test set RMSE:", round(rmse_1, 4), "\n")
+cat("Refined model 2 test set RMSE on log scale:", round(rmse_2, 4), "\n")
+cat("Refined model 2 test set RMSE on SEK scale:", round(rmse_sek_2, 2), "\n")
+cat("Refined model 3 test set RMSE on log scale:", round(rmse_3, 4), "\n")
+cat("Refined model 3 test set RMSE on SEK scale:", round(rmse_sek_3, 2), "\n\n")
+
+
+cat("Initial model test set R-squared:", round(rsq_1, 4), "\n")
+cat("Refined model 2 test set R-squared:", round(rsq_2, 4), "\n")
+cat("Refined model 3 test set R-squared:", round(rsq_3, 4), "\n")
+```
+
+I tested two refined models. Model 2 used log(price) \~ poly(mileage, 2) + poly(year, 2) in addition to all other variables. Model 3 used log(price) as well as make, year, fuel, transmission, mileage, body, engine_cc and drive, that is, removing colour, horsepower, and län variables. Model 3 performed worse than model 2, so the removed variables were actually significant and should be kept.
+
+For model 2, multiple R-squared and adjusted R-squared values of 0.8962 and 0.8947 show a very good fit, the model explains ca. 89% variance in log(price) in the training data. Large value of F-statistic with a very small p-value \< 2.2e-16 indicates that the model is overall highly statistically significant and shows an improvement over the initial model.
+
+The model could be simplified by removing the colour variables, most of the colours are not significant, except for white and red. Most of the location (län) variables are also not significant, except for Gotland where the average price is the lowest. Most of the makes are highly significant, except for a few, such as BMW and Honda.
+
+I will attempt a final refined model without the län and colour predictors, as well as adding poly to the numeric predictors.
+
+### Final model
+
+```{r fit-lm-refined-4}
+model_formula_refined_4 <- log(price) ~ poly(mileage, 2) + year + make + fuel + transmission + body + poly(engine_cc, 2) + poly(power_hk, 2) + drive
+
+lm4 <- lm(model_formula_refined_4, data = train_data)
+
+tidy(lm4, conf.int = TRUE)
+glance(lm4)
+
+vif(lm4)
+```
+
+```{r plot-lm4}
+par(mfrow = c(2, 2))
+plot(lm4)
+```
+
+### Final model evaluation
+
+```{r evaluate-lm4}
+test_pred_4 <- predict(lm4, newdata = test_data)
+test_pred_sek_4 <- exp(test_pred_4)
+rmse_4 <- rmse(actual = test_actual_log, predicted = test_pred_4)
+rsq_4 <- cor(test_actual_log, test_pred_4)^2
+rmse_sek_4 <- rmse(actual = test_actual_sek, test_pred_sek_4)
+
+cat("Refined model 4 test set RMSE on log scale:", round(rmse_4, 4), "\n")
+cat("Refined model 4 test set RMSE on SEK scale:", round(rmse_sek_4, 2), "\n")
+cat("Refined model 4 test set R-squared:", round(rsq_4, 4), "\n")
+```
+
+Model 4 shows an improvement over model 2 in every aspect. Residual standard error is 0.1849 on 4994 degrees of freedom. Multiple R-squared 0.8994 and adjusted R-squared 0.8985 values indicate an even better fit than model 2. It is an acceptable final model for the purpose of this project.
+
+```{r save-model}
+model_filename <- "final_car_model.rds"
+saveRDS(lm4, file = model_filename)
+cat("Model saved to:", model_filename, "\n")
+
+```
+
+### Testing the model
+
+Testing the model to predict price from new car data. I took random car listings from Blocket on dates that were not initially collected and entered the values manually.
+
+```{r predict-new-car}
+
+new_car_data <- tibble(
+  make = c("Dodge", "Mercedes-Benz", "Peugeot", "Skoda", "Kia", "Volkswagen", "BMW", "Ford", "Volvo", "Porsche"),
+  year = c(2020, 2017, 2012, 2015, 2018, 2015, 2019, 2019, 2018, 2020),
+  mileage = c(2054, 4060, 19979, 13872, 13200, 15980, 9888, 5507, 8914, 9693),
+  fuel = c("bensin", "bensin", "diesel", "diesel", "hybrid", "diesel", "diesel", "bensin", "diesel", "bensin"),
+  transmission = c("automat", "automat", "manuell", "manuell", "automat", "automat", "automat", "manuell", "automat", "automat"),
+  power_hk = c(396, 510, 112, 90, 206, 263, 191, 101, 236, 245),
+  engine_cc = c(5654, 3982, 1560, 1598, 1999, 2967, 1995, 998, 1969, 1984),
+  body = c("yrkesfordon", "kombi", "kombi", "halvkombi", "kombi", "SUV", "kombi", "kombi", "SUV", "SUV"),
+  drive = c("4WD", "2WD", "2WD", "2WD", "2WD", "4WD", "4WD", "2WD", "4WD", "4WD"),
+  actual_price = c(849800, 630000, 36000, 88800, 164900, 219900, 269500, 144800, 479800, 489800)
+)
+
+make_train_levels <- levels(train_data$make)
+new_car_data <- new_car_data |>
+  mutate(
+    make = fct_other(make, keep = make_train_levels, other_level = "Other"),
+    make = factor(make, levels = make_train_levels)
+  )
+
+predicted_log_prices <- predict(lm4, newdata = new_car_data)
+
+predicted_prices_sek <- round(exp(predicted_log_prices), 0)
+
+new_car_table <- new_car_data |>
+  select(make, year, actual_price)
+
+tibble(new_car_table, predicted_prices_sek)
+
+```
+
+```{r predicted-price-comparison}
+comparison_data <- new_car_data |>
+  mutate(predicted_price = predicted_prices_sek)
+
+plot_comparison <- ggplot(comparison_data, aes(x = predicted_price, y = actual_price)) +
+  geom_point(alpha = 0.7, size = 3, color = "darkorange") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "deepskyblue4", linewidth = 1) +
+  geom_text(
+    aes(label = make),
+    vjust = -0.8,
+    hjust = 0.5,
+    size = 3,
+    check_overlap = TRUE
+  ) +
+  scale_x_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  scale_y_continuous(labels = scales::label_number(scale = 1/1000, suffix = "k", accuracy = 1)) +
+  coord_equal(
+    xlim = range(c(comparison_data$predicted_price, comparison_data$actual_price), na.rm = TRUE),
+    ylim = range(c(comparison_data$predicted_price, comparison_data$actual_price), na.rm = TRUE)
+  ) +
+  labs(
+    title = "Actual vs. predicted prices for new car listings",
+    x = "Predicted price",
+    y = "Actual price"
+    )
+plot_comparison
+```
+
+# Theory questions
+
+1.  Kolla på följande video: <https://www.youtube.com/watch?v=X9_ISJ0YpGw&t=290s> , beskriv kortfattat vad en Quantile-Quantile (QQ) plot är.
+
+2.  Din kollega Karin frågar dig följande: ”Jag har hört att i Maskininlärning så är fokus på prediktioner medan man i statistisk regressionsanalys kan göra såväl prediktioner som statistisk inferens. Vad menas med det, kan du ge några exempel?” Vad svarar du Karin?
+
+3.  Vad är skillnaden på ”konfidensintervall” och ”prediktionsintervall” för predikterade värden?
+
+4.  Den multipla linjära regressionsmodellen kan skrivas som: 𝑌= 𝛽0 + 𝛽1𝑥1 + 𝛽1𝑥2+ ...+ 𝛽𝑝𝑥𝑝 +𝜀 . Hur tolkas beta parametrarna?
+
+5.  Din kollega Nils frågar dig följande: ”Stämmer det att man i statistisk regressionsmodellering inte behöver använda träning, validering och test set om man nyttjar mått såsom BIC? Vad är logiken bakom detta?” Vad svarar du Hassan?
+
+6.  Förklara algoritmen nedan för ”Best subset selection”
+
+    ![](images/clipboard-3332084604.png)
+
+7.  Ett citat från statistikern George Box är: “All models are wrong, some are useful.” Förklara vad som menas med det citatet.
+
+<!-- -->
+
+1.  A quantile-quantile plot compares the distributions of two datasets. It plots the quantiles of the first dataset against the quantiles of the second. If the two distributions are similar, the points fall approximately along a straight line. A Q-Q plot is commonly used to check if a dataset follows a normal distribution.
+2.  While both machine learning and statistical regression can be used for prediction, the difference is in their primary focus and goals. The goal of machine learning is to build models that are accurate at predicting unknown values on new data. The focus is on minimising the prediction errors and it is less important how exactly the prediction is made. Examples of prediction in machine learning: spam email classification or predicting house prices. In statistical regression the focus is on understanding the relationships between variables and statistical significance and confidence of these relationships. Example: analysis of the effect of a new medicine, controlling for demographics, the goal is to estimate the average effect, test if the effect is statistically significant and the uncertainty of the estimate for general population.
+3.  Confidence interval estimates the range where the average value of a variable is likely to fall for a given set of predictor values, that is, the uncertainty of the average outcome. Prediction interval estimates the range where a single individual observation is likely to fall for a given set of predictor values, that is, the uncertainty of a single outcome.
+4.  𝛽0 is the intercept, 𝛽1, 𝛽2... 𝛽p are the model coefficients for predictors which are unknown and are estimated with training data, and 𝜀 is the error.
+5.  BIC selects a model based on the same data used for fitting the model. It helps select a simpler model and reduces overfitting for the specific dataset. The machine learning approach of training, validation, and test datasets evaluates model performance on previously unseen data because the primary goal is to achieve high accuracy on new data.
+6.  This is an algorithm to find the best linear regression model by considering all possible combinations of the predictor variables. It starts with a null model with no predictors. Then it iterates through subset sizes with predictor number from 1 up to p and fits all possible regression models for each. It selects the best model per subset based on the smallest residual sum of squares or the largest R\^2. Then it selects the overall best model based on validation criteria such as prediction error on validation set or cross-validation.
+7.  "All models are wrong" means that a model is not a perfect representation of reality, it is an abstraction by default, focussing on limited aspects of the reality. "Some models are useful", even though they're not perfect, models can help us make accurate predictions that we couldn't do without them. What is important in a model is that it is a useful tool for a specific task, not that it is a perfect copy of the reality.
+
+# Self-evaluation
+
+Honestly, in the beginning I disliked R intensely. RStudio was also hard to get used to, after having used VSCode for a long time. The worst thing about R is having to type special characters.
+
+While working on this project, however, I found that it was good at visualising data quite nicely and the export to html and pdf function is very useful. So, it has its uses, but I am glad to go back to using Python for machine learning.
